@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  etrends:
+    image: ghcr.io/jayepolo/etrends:latest
+    container_name: etrends-app
+    restart: unless-stopped
+    volumes:
+      - etrends_data:/data
+    environment:
+      - DATABASE_URL=sqlite:////data/database.db
+      - FLASK_ENV=production
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.etrends.rule=Host(`etrends.pololabs.io`)"
+      - "traefik.http.routers.etrends.entrypoints=web,websecure"
+      - "traefik.http.routers.etrends.tls=true"
+      - "traefik.http.services.etrends.loadbalancer.server.port=5000"
+      - "traefik.docker.network=traefik"
+    networks:
+      - traefik
+
+volumes:
+  etrends_data:
+
+networks:
+  traefik:
+    external: true
