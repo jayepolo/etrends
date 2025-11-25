@@ -64,7 +64,7 @@ jobs:
             docker pull $DOCKER_REGISTRY/$IMAGE_NAME:latest
             
             # Deploy with docker-compose
-            docker-compose down || true
-            docker-compose up -d
+            docker compose down || true
+            docker compose up -d
 
 
