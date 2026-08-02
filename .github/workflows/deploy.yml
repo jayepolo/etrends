@@ -42,29 +42,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1.0.0
+      # --- Deploy to tanzu2 (Dokploy) ---------------------------------------
+      # Artifact-driven CI/CD (see tanzu2 charter D5): CI builds + pushes the
+      # image above (SHA-tagged for pinned rollback); Dokploy pulls and deploys
+      # it. This step just POSTs to the app's Dokploy deploy webhook.
+      #
+      # Requires repo secret DOKPLOY_ETRENDS_WEBHOOK (from the Dokploy app's
+      # Deployments -> Webhook URL). Until it's set, the step no-ops so builds
+      # keep working. Runs only on push to main, never on PRs.
+      - name: Trigger Dokploy deploy (tanzu2)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          DOCKER_REGISTRY: ${{ env.DOCKER_REGISTRY }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USERNAME }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: DOCKER_REGISTRY,IMAGE_NAME,GHCR_TOKEN
-          script: |
-            # Login to GitHub Container Registry
-            echo $GHCR_TOKEN | docker login $DOCKER_REGISTRY -u ${{ github.actor }} --password-stdin
-            
-            # Navigate to project directory
-            cd /home/jayepolo/Development/eTrends
-            
-            # Pull the latest image
-            docker pull $DOCKER_REGISTRY/$IMAGE_NAME:latest
-            
-            # Deploy with docker-compose
-            docker compose down || true
-            docker compose up -d
-
+          DOKPLOY_WEBHOOK: ${{ secrets.DOKPLOY_ETRENDS_WEBHOOK }}
+        run: |
+          if [ -z "$DOKPLOY_WEBHOOK" ]; then
+            echo "DOKPLOY_ETRENDS_WEBHOOK not set — skipping Dokploy deploy trigger."
+            exit 0
+          fi
+          echo "Triggering Dokploy redeploy for etrends…"
+          curl -fsSL -X POST "$DOKPLOY_WEBHOOK"
+          echo "Dokploy deploy triggered."
 
