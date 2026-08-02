@@ -116,16 +116,6 @@ def fetch_federal_data():
         logger.error(f"Error fetching federal price data: {str(e)}", exc_info=True)
         return False, f"Error fetching federal data: {str(e)}"
 
-# Scheduled task for federal data
-@scheduler.task('cron', id='fetch_federal_data', hour=7)
-def scheduled_federal_data_fetch():
-    with app.app_context():
-        success, message = fetch_federal_data()
-        if success:
-            logger.info("Scheduled federal data fetch completed successfully")
-        else:
-            logger.error("Scheduled federal data fetch failed")
-
 # Routes
 @app.route('/')
 @login_required

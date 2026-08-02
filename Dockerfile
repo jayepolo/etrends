@@ -30,4 +30,6 @@ USER 1000
 
 #CMD ["flask", "run", "--host=0.0.0.0"]
 # Use gunicorn instead of Flask's development server
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "app:app"]
+# Single worker so the in-process APScheduler runs exactly once (multiple
+# workers = multiple schedulers = duplicated jobs). Threads cover concurrency.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "8", "app:app"]
