@@ -151,21 +151,21 @@ def logout():
 def scrape_page():
     if request.method == 'POST':
         if 'local_scrape' in request.form:
+            # perform_scrape() writes its own ScrapeLog entry
             success, message = perform_scrape()
         elif 'federal_data' in request.form:
             success, message = fetch_federal_data()
-        
-        # Log the attempt for both local and federal data
-        log_entry = ScrapeLog(
-            timestamp=datetime.now(),
-            success=success,
-            message=message,
-            scheduled=False,
-            scrape_type='Local' if 'local_scrape' in request.form else 'Federal'
-        )
-        db.session.add(log_entry)
-        db.session.commit()
-        
+            # fetch_federal_data() does not self-log, so record the attempt here
+            log_entry = ScrapeLog(
+                timestamp=datetime.now(),
+                success=success,
+                message=message,
+                scheduled=False,
+                scrape_type='Federal'
+            )
+            db.session.add(log_entry)
+            db.session.commit()
+
         flash(message, 'success' if success else 'error')
         return redirect(url_for('scrape_page'))
     
