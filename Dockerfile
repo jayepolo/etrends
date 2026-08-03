@@ -26,10 +26,11 @@ RUN chmod +x /app/entrypoint.sh
 RUN mkdir -p /data
 RUN chown -R 1000:1000 /data
 
-# Set environment variables
+# Set environment variables.
+# FLASK_ENV and DATABASE_URL are intentionally NOT set here — they now come
+# solely from Infisical, injected at startup by the entrypoint wrapper. Baking
+# defaults here would just be a second source of truth for the same keys.
 ENV FLASK_APP=app.py
-ENV FLASK_ENV=production
-ENV DATABASE_URL=sqlite:////data/database.db
 ENV PYTHONUNBUFFERED=1
 
 # Run as non-root user
