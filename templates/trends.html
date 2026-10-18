@@ -16,6 +16,19 @@
     .control-group {
         margin-bottom: 20px;
     }
+    .index-swatch {
+        display: inline-block;
+        width: 22px;
+        height: 8px;
+        margin-left: 8px;
+        vertical-align: middle;
+        border-radius: 1px;
+    }
+    .index-group-label {
+        font-weight: 600;
+        margin-top: 8px;
+        margin-bottom: 2px;
+    }
 </style>
 {% endblock %}
 
@@ -52,11 +65,19 @@
                         <input class="form-check-input" type="radio" name="timeWindow" id="1year" value="365">
                         <label class="form-check-label" for="1year">1 Year</label>
                     </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="timeWindow" id="3years" value="1095">
+                        <label class="form-check-label" for="3years">3 Years</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="timeWindow" id="allData" value="all">
+                        <label class="form-check-label" for="allData">All Data</label>
+                    </div>
                 </div>
             </div>
             
             <!-- Vendor Selection -->
-            <div class="col-md-6">
+            <div class="col-md-5">
                 <div class="control-group">
                     <h4>Vendor Selection</h4>
                     <div class="form-check">
@@ -71,36 +92,119 @@
                         <input class="form-check-input" type="radio" name="vendorSelection" id="allVendors" value="all" checked>
                         <label class="form-check-label" for="allVendors">All Vendors</label>
                     </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="vendorSelection" id="noVendors" value="none">
+                        <label class="form-check-label" for="noVendors">None</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="vendorSelection" id="favoriteVendors" value="favorites">
+                        <label class="form-check-label" for="favoriteVendors">Favorites</label>
+                    </div>                </div>
+            </div>
+
+            <!-- Indexes -->
+            <div class="col-md-4">
+                <div class="control-group">
+                    <h4>Indexes</h4>
+                    <div class="index-group-label">Heating Oil</div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="federal" id="federal-checkbox">
+                        <label class="form-check-label" for="federal-checkbox">Federal Average</label><span class="index-swatch" data-index="federal"></span>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="local" id="local-checkbox">
+                        <label class="form-check-label" for="local-checkbox">Local Average</label><span class="index-swatch" data-index="local"></span>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="spot" id="spot-checkbox">
+                        <label class="form-check-label" for="spot-checkbox">NY Spot</label><span class="index-swatch" data-index="spot"></span>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="spread" id="spread-checkbox">
+                        <label class="form-check-label" for="spread-checkbox">Spread (Avg &minus; Spot)</label><span class="index-swatch" data-index="spread"></span>
+                    </div>
+                    <div class="index-group-label">Diesel</div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="diesel" id="diesel-checkbox">
+                        <label class="form-check-label" for="diesel-checkbox">NE Average</label><span class="index-swatch" data-index="diesel"></span>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="dieselSpot" id="diesel-spot-checkbox">
+                        <label class="form-check-label" for="diesel-spot-checkbox">NY Spot</label><span class="index-swatch" data-index="dieselSpot"></span>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input index-checkbox" type="checkbox" value="dieselSpread" id="diesel-spread-checkbox">
+                        <label class="form-check-label" for="diesel-spread-checkbox">Spread (Avg &minus; Spot)</label><span class="index-swatch" data-index="dieselSpread"></span>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
     
-    <!-- Right Column: Vendor List -->
+    <!-- Right Column: Vendor List (built from the data for the current time window) -->
     <div class="col-md-3">
         <h4>Vendors</h4>
-        <div class="vendor-list">
-            {% for vendor in vendors %}
-            <div class="form-check">
-                <input class="form-check-input vendor-checkbox" type="checkbox" value="{{ vendor }}" id="vendor-{{ loop.index }}" checked>
-                <label class="form-check-label" for="vendor-{{ loop.index }}">
-                    {{ vendor }}
-                </label>
-            </div>
-            {% endfor %}
-            <div class="form-check">
-                <input class="form-check-input" type="checkbox" value="federal" id="federal-checkbox">
-                <label class="form-check-label" for="federal-checkbox">
-                    Federal Average
-                </label>
-            </div>
-        </div>
+        <div class="vendor-list" id="vendorList"></div>
     </div>
 </div>
 
 <script>
-    const vendorData = {{ vendors | tojson }};
-    const federalData = {{ federal_prices | tojson }};
+    let vendorData = {{ vendors | tojson }};
+    let federalData = {{ federal_prices | tojson }};
+    let localAverageData = {{ local_average | tojson }};
+    let spotData = {{ spot_prices | tojson }};
+    let spreadData = {{ price_spread | tojson }};
+    let dieselData = {{ diesel_prices | tojson }};
+    let dieselSpotData = {{ diesel_spot_prices | tojson }};
+    let dieselSpreadData = {{ diesel_spread | tojson }};
+
+    // Saved settings (per user, stored server-side). Apply them to the controls
+    // before building the chart; this also overrides any form state the
+    // browser restores on refresh.
+    const savedSettings = {{ trends_settings | tojson }};
+    const savedIndexes = savedSettings.indexes || {};
+    const favorites = new Set(savedSettings.favorites || []);
+    // Vendors unchecked while "All Vendors" is selected
+    const hiddenVendors = new Set(savedSettings.hiddenVendors || []);
+
+    function checkRadio(name, value, fallback) {
+        const radio = document.querySelector(`input[name="${name}"][value="${value}"]`)
+            || document.querySelector(`input[name="${name}"][value="${fallback}"]`);
+        radio.checked = true;
+    }
+    checkRadio('timeWindow', savedSettings.timeWindow, '90');
+    checkRadio('vendorSelection', savedSettings.vendorSelection, 'all');
+    document.querySelectorAll('.index-checkbox').forEach(checkbox => {
+        checkbox.checked = !!savedIndexes[checkbox.value];
+    });
+
+    function currentSelection() {
+        return document.querySelector('input[name="vendorSelection"]:checked').value;
+    }
+
+    let saveTimer = null;
+    function saveSettings() {
+        const indexes = {};
+        document.querySelectorAll('.index-checkbox').forEach(checkbox => {
+            indexes[checkbox.value] = checkbox.checked;
+        });
+        const settings = {
+            timeWindow: document.querySelector('input[name="timeWindow"]:checked').value,
+            vendorSelection: currentSelection(),
+            indexes: indexes,
+            favorites: Array.from(favorites),
+            hiddenVendors: Array.from(hiddenVendors),
+        };
+        // Debounce so rapid clicks result in a single save
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+            fetch('/trends/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings),
+            }).catch(error => console.error('Failed to save settings:', error));
+        }, 300);
+    }
     const ctx = document.getElementById('trendChart').getContext('2d');
     const colors = [
         'rgba(255, 99, 132, 1)',
@@ -110,31 +214,168 @@
         'rgba(153, 102, 255, 1)',
         'rgba(255, 159, 64, 1)'
     ];
+    const FEDERAL_LABEL = 'Federal Average';
+    const LOCAL_LABEL = 'Local Average';
+    // Hover labels; also used to look up datasets, so they must be unique
+    const SPOT_LABEL = 'NY Spot';
+    const SPREAD_LABEL = 'Spread';
+    const DIESEL_LABEL = 'Diesel NE Average';
+    const DIESEL_SPOT_LABEL = 'Diesel NY Spot';
+    const DIESEL_SPREAD_LABEL = 'Diesel Spread';
+    const INDEX_LABELS = {
+        federal: FEDERAL_LABEL, local: LOCAL_LABEL, spot: SPOT_LABEL, spread: SPREAD_LABEL,
+        diesel: DIESEL_LABEL, dieselSpot: DIESEL_SPOT_LABEL, dieselSpread: DIESEL_SPREAD_LABEL,
+    };
+    const ESTIMATE_COLOR = 'rgba(143, 143, 143, 1)';
+    const GAP_MS = 10 * 24 * 60 * 60 * 1000;
 
-    const datasets = Object.entries(vendorData).map(([vendor, data], index) => ({
-        label: vendor,
-        data: data.prices.map((price, i) => ({ x: new Date(data.dates[i]), y: price })),
-        borderColor: colors[index % colors.length],
-        backgroundColor: colors[index % colors.length],
-        fill: false,
-        pointRadius: data.prices.length === 1 ? 5 : undefined,
-    }));
+    function toPoints(series) {
+        return series.prices.map((price, i) => ({
+            x: new Date(series.dates[i]),
+            y: price,
+            estimated: series.estimated ? series.estimated[i] : false,
+        }));
+    }
 
-    // Add federal price data
-    datasets.push({
-        label: 'Federal Average',
-        data: federalData.prices.map((price, i) => ({ x: new Date(federalData.dates[i]), y: price })),
-        borderColor: 'rgba(0, 0, 0, 1)',
-        backgroundColor: 'rgba(0, 0, 0, 1)',
-        fill: false,
-        borderWidth: 2,
-        pointRadius: 0,
-    });
+    // Insert a null point wherever consecutive points are far apart, so the
+    // line breaks across seasonal gaps instead of drawing a misleading bridge
+    function breakAtGaps(points) {
+        const result = [];
+        points.forEach((point, i) => {
+            if (i > 0 && point.x - points[i - 1].x > GAP_MS) {
+                result.push({ x: new Date((point.x.getTime() + points[i - 1].x.getTime()) / 2), y: null });
+            }
+            result.push(point);
+        });
+        return result;
+    }
+
+    function getLatestPrice(vendorName) {
+        const data = vendorData[vendorName];
+        return data.prices[data.prices.length - 1];
+    }
+
+    // Which vendors a Vendor Selection option shows, for the current window's data
+    function computeVisibleVendors(selection) {
+        const names = Object.keys(vendorData);
+        if (selection === 'top5' || selection === 'top10') {
+            const count = selection === 'top5' ? 5 : 10;
+            return new Set(names.slice().sort((a, b) => getLatestPrice(a) - getLatestPrice(b)).slice(0, count));
+        } else if (selection === 'none') {
+            return new Set();
+        } else if (selection === 'favorites') {
+            return new Set(names.filter(name => favorites.has(name)));
+        }
+        return new Set(names.filter(name => !hiddenVendors.has(name)));
+    }
+
+    let visibleVendors = computeVisibleVendors(currentSelection());
+
+    function buildDatasets() {
+        const datasets = Object.entries(vendorData).map(([vendor, data], index) => ({
+            label: vendor,
+            data: toPoints(data),
+            borderColor: colors[index % colors.length],
+            backgroundColor: colors[index % colors.length],
+            fill: false,
+            pointRadius: data.prices.length === 1 ? 5 : undefined,
+            hidden: !visibleVendors.has(vendor),
+        }));
+
+        // Segments touching an estimated point are drawn grey
+        const federalPoints = toPoints(federalData);
+        const isEstimatedSegment = segment =>
+            federalPoints[segment.p0DataIndex].estimated || federalPoints[segment.p1DataIndex].estimated;
+        datasets.push({
+            label: FEDERAL_LABEL,
+            data: federalPoints,
+            borderColor: 'rgba(0, 0, 0, 1)',
+            backgroundColor: 'rgba(0, 0, 0, 1)',
+            fill: false,
+            borderWidth: 2,
+            pointRadius: 0,
+            segment: {
+                borderColor: segment => isEstimatedSegment(segment) ? ESTIMATE_COLOR : undefined,
+            },
+            hidden: !document.getElementById('federal-checkbox').checked,
+        });
+
+        datasets.push({
+            label: LOCAL_LABEL,
+            data: toPoints(localAverageData),
+            borderColor: 'rgba(139, 69, 19, 1)',
+            backgroundColor: 'rgba(139, 69, 19, 1)',
+            fill: false,
+            borderWidth: 2,
+            pointRadius: 0,
+            hidden: !document.getElementById('local-checkbox').checked,
+        });
+
+        datasets.push({
+            label: SPOT_LABEL,
+            data: toPoints(spotData),
+            borderColor: 'rgba(25, 135, 84, 1)',
+            backgroundColor: 'rgba(25, 135, 84, 1)',
+            fill: false,
+            borderWidth: 2,
+            borderDash: [2, 3],
+            pointRadius: 0,
+            hidden: !document.getElementById('spot-checkbox').checked,
+        });
+
+        datasets.push({
+            label: SPREAD_LABEL,
+            data: breakAtGaps(toPoints(spreadData)),
+            borderColor: 'rgba(111, 66, 193, 1)',
+            backgroundColor: 'rgba(111, 66, 193, 1)',
+            fill: false,
+            borderWidth: 2,
+            pointRadius: 0,
+            hidden: !document.getElementById('spread-checkbox').checked,
+        });
+
+        // Diesel pair mirrors heating oil: retail solid, spot dotted (same navy)
+        datasets.push({
+            label: DIESEL_LABEL,
+            data: toPoints(dieselData),
+            borderColor: 'rgba(13, 59, 102, 1)',
+            backgroundColor: 'rgba(13, 59, 102, 1)',
+            fill: false,
+            borderWidth: 2,
+            pointRadius: 0,
+            hidden: !document.getElementById('diesel-checkbox').checked,
+        });
+
+        datasets.push({
+            label: DIESEL_SPOT_LABEL,
+            data: toPoints(dieselSpotData),
+            borderColor: 'rgba(13, 59, 102, 1)',
+            backgroundColor: 'rgba(13, 59, 102, 1)',
+            fill: false,
+            borderWidth: 2,
+            borderDash: [2, 3],
+            pointRadius: 0,
+            hidden: !document.getElementById('diesel-spot-checkbox').checked,
+        });
+
+        datasets.push({
+            label: DIESEL_SPREAD_LABEL,
+            data: breakAtGaps(toPoints(dieselSpreadData)),
+            borderColor: 'rgba(32, 120, 120, 1)',
+            backgroundColor: 'rgba(32, 120, 120, 1)',
+            fill: false,
+            borderWidth: 2,
+            pointRadius: 0,
+            hidden: !document.getElementById('diesel-spread-checkbox').checked,
+        });
+
+        return datasets;
+    }
 
     const chart = new Chart(ctx, {
         type: 'line',
         data: {
-            datasets: datasets
+            datasets: buildDatasets()
         },
         options: {
             responsive: true,
@@ -143,10 +384,11 @@
                 x: {
                     type: 'time',
                     time: {
-                        parser: 'yyyy-MM-dd\'T\'HH:mm:ss\'Z\'',
-                        unit: 'day',
+                        // Let Chart.js pick day/month/year ticks based on the window size
                         displayFormats: {
-                            day: 'MMM d'
+                            day: 'MMM d',
+                            month: 'MMM yyyy',
+                            year: 'yyyy'
                         }
                     },
                     title: {
@@ -178,6 +420,9 @@
                         },
                         label: function(context) {
                             let label = context.dataset.label || '';
+                            if (context.raw && context.raw.estimated) {
+                                label += ' (estimated)';
+                            }
                             if (label) {
                                 label += ': ';
                             }
@@ -196,91 +441,136 @@
         }
     });
 
-    function updateChart() {
+    // Color each index's legend swatch from its chart line; dotted lines get a dotted swatch
+    function colorIndexSwatches() {
+        document.querySelectorAll('.index-swatch').forEach(swatch => {
+            const dataset = chart.data.datasets.find(d => d.label === INDEX_LABELS[swatch.dataset.index]);
+            if (!dataset) {
+                return;
+            }
+            const color = dataset.borderColor;
+            swatch.style.background = dataset.borderDash
+                ? `repeating-linear-gradient(90deg, ${color} 0 3px, transparent 3px 6px)`
+                : color;
+        });
+    }
+    colorIndexSwatches();
+
+    function setDatasetVisible(label, visible) {
+        const index = chart.data.datasets.findIndex(d => d.label === label);
+        if (index !== -1) {
+            chart.setDatasetVisibility(index, visible);
+        }
+    }
+
+    // A vendor checkbox edits favorites under "Favorites" and the hidden list
+    // under "All Vendors" (both saved); under the other options it is a
+    // temporary tweak, since those lists are recomputed
+    function onVendorToggled(vendor, visible) {
+        const selection = currentSelection();
+        if (selection === 'favorites') {
+            visible ? favorites.add(vendor) : favorites.delete(vendor);
+            saveSettings();
+        } else if (selection === 'all') {
+            visible ? hiddenVendors.delete(vendor) : hiddenVendors.add(vendor);
+            saveSettings();
+        }
+        visible ? visibleVendors.add(vendor) : visibleVendors.delete(vendor);
+        setDatasetVisible(vendor, visible);
         chart.update();
     }
 
-    function getLatestPrice(vendorName) {
-        const data = vendorData[vendorName];
-        return data.prices[data.prices.length - 1];
-    }
+    function renderVendorList() {
+        const list = document.getElementById('vendorList');
+        list.innerHTML = '';
+        Object.keys(vendorData).forEach((vendor, i) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'form-check';
 
-    function updateVendorSelection(selection) {
-        const vendorCheckboxes = document.querySelectorAll('.vendor-checkbox');
-        const sortedVendors = Array.from(vendorCheckboxes)
-            .sort((a, b) => getLatestPrice(a.value) - getLatestPrice(b.value));
+            const checkbox = document.createElement('input');
+            checkbox.className = 'form-check-input vendor-checkbox';
+            checkbox.type = 'checkbox';
+            checkbox.value = vendor;
+            checkbox.id = `vendor-${i}`;
+            checkbox.checked = visibleVendors.has(vendor);
+            checkbox.addEventListener('change', function() {
+                onVendorToggled(this.value, this.checked);
+            });
 
-        vendorCheckboxes.forEach(checkbox => {
-            checkbox.checked = false;
-            chart.setDatasetVisibility(datasets.findIndex(d => d.label === checkbox.value), false);
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = checkbox.id;
+            label.textContent = vendor;
+
+            wrapper.append(checkbox, label);
+            list.appendChild(wrapper);
         });
-
-        if (selection === 'top5') {
-            sortedVendors.slice(0, 5).forEach(checkbox => {
-                checkbox.checked = true;
-                chart.setDatasetVisibility(datasets.findIndex(d => d.label === checkbox.value), true);
-            });
-        } else if (selection === 'top10') {
-            sortedVendors.slice(0, 10).forEach(checkbox => {
-                checkbox.checked = true;
-                chart.setDatasetVisibility(datasets.findIndex(d => d.label === checkbox.value), true);
-            });
-        } else {
-            vendorCheckboxes.forEach(checkbox => {
-                checkbox.checked = true;
-                chart.setDatasetVisibility(datasets.findIndex(d => d.label === checkbox.value), true);
-            });
-        }
-
-        updateChart();
     }
 
-    document.querySelectorAll('.vendor-checkbox, #federal-checkbox').forEach(checkbox => {
+    function applyVendorSelection(selection) {
+        visibleVendors = computeVisibleVendors(selection);
+        document.querySelectorAll('.vendor-checkbox').forEach(checkbox => {
+            checkbox.checked = visibleVendors.has(checkbox.value);
+            setDatasetVisible(checkbox.value, checkbox.checked);
+        });
+        chart.update();
+    }
+
+    document.querySelectorAll('.index-checkbox').forEach(checkbox => {
         checkbox.addEventListener('change', function() {
-            const datasetIndex = this.value === 'federal' ? 
-                datasets.length - 1 : 
-                datasets.findIndex(d => d.label === this.value);
-            chart.setDatasetVisibility(datasetIndex, this.checked);
-            updateChart();
+            setDatasetVisible(INDEX_LABELS[this.value], this.checked);
+            chart.update();
+            saveSettings();
         });
     });
 
     document.querySelectorAll('input[name="vendorSelection"]').forEach(radio => {
         radio.addEventListener('change', function() {
-            updateVendorSelection(this.value);
+            applyVendorSelection(this.value);
+            saveSettings();
         });
     });
 
     document.querySelectorAll('input[name="timeWindow"]').forEach(radio => {
         radio.addEventListener('change', function() {
             fetchDataForTimeWindow(this.value);
+            saveSettings();
         });
     });
 
-    function fetchDataForTimeWindow(days) {
-        fetch(`/trends?time_window=${days}`)
-            .then(response => response.json())
+    function fetchDataForTimeWindow(timeWindow) {
+        fetch(`/trends?time_window=${timeWindow}`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 vendorData = data.vendors;
                 federalData = data.federal_prices;
+                localAverageData = data.local_average;
+                spotData = data.spot_prices;
+                spreadData = data.price_spread;
+                dieselData = data.diesel_prices;
+                dieselSpotData = data.diesel_spot_prices;
+                dieselSpreadData = data.diesel_spread;
                 updateChartData();
-            });
+            })
+            .catch(error => console.error('Failed to load trend data:', error));
     }
 
     function updateChartData() {
-        datasets.forEach((dataset, index) => {
-            if (dataset.label === 'Federal Average') {
-                dataset.data = federalData.prices.map((price, i) => ({ x: new Date(federalData.dates[i]), y: price }));
-            } else {
-                const data = vendorData[dataset.label];
-                dataset.data = data.prices.map((price, i) => ({ x: new Date(data.dates[i]), y: price }));
-            }
-        });
-        updateChart();
+        // The set of vendors (and lowest prices) can differ between windows,
+        // so recompute the selection and rebuild everything
+        visibleVendors = computeVisibleVendors(currentSelection());
+        chart.data.datasets = buildDatasets();
+        renderVendorList();
+        chart.update();
     }
 
-    // Initialize the chart with Federal Average hidden
-    chart.setDatasetVisibility(datasets.length - 1, false);
-    updateChart();
+    renderVendorList();
 </script>
 {% endblock %}

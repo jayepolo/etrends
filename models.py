@@ -32,10 +32,25 @@ class FederalPriceData(db.Model):
     date = db.Column(db.Date, nullable=False, unique=True)
     price = db.Column(db.Float, nullable=False)
 
+class MarketPriceData(db.Model):
+    """Weekly year-round EIA market series (spot and diesel prices), keyed by EIA series id."""
+    __tablename__ = 'market_price_data'
+    __table_args__ = (db.UniqueConstraint('series', 'date', name='uq_market_series_date'),)
+    id = db.Column(db.Integer, primary_key=True)
+    series = db.Column(db.String(40), nullable=False, index=True)
+    date = db.Column(db.Date, nullable=False)
+    price = db.Column(db.Float, nullable=False)
+
+class UserSettings(db.Model):
+    """Per-user UI settings (e.g. trends page selections), stored as JSON."""
+    __tablename__ = 'user_settings'
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    settings = db.Column(db.Text, nullable=False, default='{}')
+
 class ScrapeLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     timestamp = db.Column(db.DateTime, nullable=False)
     success = db.Column(db.Boolean, nullable=False)
     message = db.Column(db.Text)
     scheduled = db.Column(db.Boolean, nullable=False)
-    scrape_type = db.Column(db.String(10), nullable=False)  # 'Local' or 'Federal'
+    scrape_type = db.Column(db.String(10), nullable=False)  # 'Local', 'Federal', 'Spot', 'Diesel' or 'DieselSpot'

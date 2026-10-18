@@ -57,7 +57,10 @@ class Scraper:
 
                 self.logger.info(f"Processing row {i}: Company: {company_name}, Town: {town}, Price: {price}, Raw Date: '{date_str}', Parsed Date: {date}")
 
-                if price is not None and date is not None:
+                if price is not None and price <= 0:
+                    # A $0 (or negative) price is a bad listing, never a real price
+                    self.logger.warning(f"Skipping row {i} due to invalid price {price} for {company_name}")
+                elif price is not None and date is not None:
                     # Check if vendor exists, if not create a new one
                     vendor = Vendor.query.filter_by(name=company_name).first()
                     if not vendor:

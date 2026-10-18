@@ -1,5 +1,7 @@
+import json
 import logging
 import requests
+from bisect import bisect_left
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
@@ -8,7 +10,7 @@ from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 from scraper import Scraper
-from models import db, User, Vendor, PriceData, ScrapeLog, FederalPriceData
+from models import db, User, Vendor, PriceData, ScrapeLog, FederalPriceData, MarketPriceData, UserSettings
 from config import Config
 from sqlalchemy import func, select, and_, desc
 
@@ -22,6 +24,11 @@ app.config.from_object(Config)
 # Initialize extensions
 db.init_app(app)
 migrate = Migrate(app, db)
+
+# The production DB was not created through Alembic, so create any missing
+# tables (e.g. spot_price_data) at startup. Existing tables are left as-is.
+with app.app_context():
+    db.create_all()
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 scheduler = APScheduler()
@@ -81,40 +88,95 @@ def scheduled_scrape():
         perform_scrape(scheduled=True)
 
 # Fetch data from the Fed's EIA site on oil prices
-def fetch_federal_data():
-    api_key = "r5rztCthY9srZ1aBSnuzNZwcREkSujGwmXcAQ5KW"
-    url = f"https://api.eia.gov/v2/petroleum/pri/wfr/data/?frequency=weekly&data[0]=value&facets[series][]=W_EPD2F_PRS_SRI_DPG&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key={api_key}"
-    
-    logger.info(f"Fetching federal data from URL: {url}")
+EIA_API_KEY = "r5rztCthY9srZ1aBSnuzNZwcREkSujGwmXcAQ5KW"
+EIA_TIMEOUT_SECONDS = 300  # the EIA API can take minutes to return a full history
+EIA_REFRESH_WEEKS = 8      # once a series is loaded, re-fetch only recent weeks (picks up EIA revisions)
+
+# EIA series shown as trends indexes (stored in MarketPriceData)
+NY_SPOT_SERIES = 'EER_EPD2F_PF4_Y35NY_DPG'          # NY Harbor No. 2 heating oil spot, FOB
+DIESEL_LOCAL_SERIES = 'EMD_EPD2D_PTE_R1X_DPG'       # New England (PADD 1A) retail diesel; no RI series exists
+DIESEL_SPOT_SERIES = 'EER_EPD2DXL0_PF4_Y35NY_DPG'   # NY Harbor ultra-low sulfur diesel spot
+
+def fetch_eia_series(route, series_id, label, model=MarketPriceData):
+    """Fetch a weekly EIA series and upsert it into a (date, price) model.
+
+    MarketPriceData rows are scoped by series id; other models hold one series each.
+    """
+    scope = {'series': series_id} if model is MarketPriceData else {}
+    latest = db.session.query(func.max(model.date)).filter_by(**scope).scalar()
+    start = f"&start={(latest - timedelta(weeks=EIA_REFRESH_WEEKS)).isoformat()}" if latest else ""
+    url = f"https://api.eia.gov/v2/petroleum/{route}/data/?frequency=weekly&data[0]=value&facets[series][]={series_id}{start}&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key={EIA_API_KEY}"
+
+    logger.info(f"Fetching {label} data for EIA series {series_id} ({'since ' + start[7:] if start else 'full history'})")
     try:
-        response = requests.get(url)
+        # The EIA API intermittently returns 5xx gateway timeouts; retry once
+        for attempt in range(2):
+            response = requests.get(url, timeout=EIA_TIMEOUT_SECONDS)
+            if response.status_code < 500 or attempt == 1:
+                break
+            logger.warning(f"EIA returned HTTP {response.status_code} for {label}; retrying")
         response.raise_for_status()
         data = response.json()
-        
+
         logger.info(f"Received {len(data['response']['data'])} data points from the API")
-        
+
+        existing = {row.date: row for row in model.query.filter_by(**scope)}
         new_entries = 0
         updated_entries = 0
         for item in data['response']['data']:
+            if item['value'] is None:
+                continue
             date = datetime.strptime(item['period'], "%Y-%m-%d").date()
             price = float(item['value'])
-            
-            existing_data = FederalPriceData.query.filter_by(date=date).first()
+            if price <= 0:
+                continue  # $0 is a bad data point, never a real price
+
+            existing_data = existing.get(date)
             if existing_data:
                 if existing_data.price != price:
                     existing_data.price = price
                     updated_entries += 1
             else:
-                new_data = FederalPriceData(date=date, price=price)
+                new_data = model(date=date, price=price, **scope)
                 db.session.add(new_data)
+                existing[date] = new_data
                 new_entries += 1
-        
+
         db.session.commit()
-        logger.info(f"Federal price data updated successfully. New entries: {new_entries}, Updated entries: {updated_entries}")
-        return True, f"Federal data updated. New: {new_entries}, Updated: {updated_entries}"
+        logger.info(f"{label} price data updated successfully. New entries: {new_entries}, Updated entries: {updated_entries}")
+        return True, f"{label} data updated. New: {new_entries}, Updated: {updated_entries}"
     except Exception as e:
-        logger.error(f"Error fetching federal price data: {str(e)}", exc_info=True)
-        return False, f"Error fetching federal data: {str(e)}"
+        db.session.rollback()
+        # Error text from requests includes the request URL, so redact the API key
+        error = str(e).replace(EIA_API_KEY, '***')
+        logger.error(f"Error fetching {label} price data: {error}")
+        return False, f"Error fetching {label} data: {error}"
+
+def fetch_federal_data():
+    # Rhode Island residential No. 2 heating oil (heating season only, Oct-Mar)
+    return fetch_eia_series('pri/wfr', 'W_EPD2F_PRS_SRI_DPG', 'Federal', model=FederalPriceData)
+
+def fetch_spot_data():
+    return fetch_eia_series('pri/spt', NY_SPOT_SERIES, 'NY Spot')
+
+def fetch_diesel_data():
+    return fetch_eia_series('pri/gnd', DIESEL_LOCAL_SERIES, 'Local Diesel')
+
+def fetch_diesel_spot_data():
+    return fetch_eia_series('pri/spt', DIESEL_SPOT_SERIES, 'Diesel Spot')
+
+# Year-round market series pulled together by the "Pull Market Data" button and the daily job
+MARKET_FETCHES = [(fetch_spot_data, 'Spot'), (fetch_diesel_data, 'Diesel'), (fetch_diesel_spot_data, 'DieselSpot')]
+
+def log_fetch(success, message, scheduled, scrape_type):
+    db.session.add(ScrapeLog(
+        timestamp=datetime.now(),
+        success=success,
+        message=message,
+        scheduled=scheduled,
+        scrape_type=scrape_type
+    ))
+    db.session.commit()
 
 # Routes
 @app.route('/')
@@ -156,15 +218,15 @@ def scrape_page():
         elif 'federal_data' in request.form:
             success, message = fetch_federal_data()
             # fetch_federal_data() does not self-log, so record the attempt here
-            log_entry = ScrapeLog(
-                timestamp=datetime.now(),
-                success=success,
-                message=message,
-                scheduled=False,
-                scrape_type='Federal'
-            )
-            db.session.add(log_entry)
-            db.session.commit()
+            log_fetch(success, message, scheduled=False, scrape_type='Federal')
+        elif 'market_data' in request.form:
+            results = []
+            for fetch, scrape_type in MARKET_FETCHES:
+                ok, msg = fetch()
+                log_fetch(ok, msg, scheduled=False, scrape_type=scrape_type)
+                results.append((ok, msg))
+            success = all(ok for ok, _ in results)
+            message = ' | '.join(msg for _, msg in results)
 
         flash(message, 'success' if success else 'error')
         return redirect(url_for('scrape_page'))
@@ -205,20 +267,14 @@ def scheduled_federal_data_fetch():
     with app.app_context():
         job = scheduler.get_job('fetch_federal_data')
         if job and job.next_run_time is not None:
-            success, message = fetch_federal_data()
-            log_entry = ScrapeLog(
-                timestamp=datetime.now(),
-                success=success,
-                message=message,
-                scheduled=True,
-                scrape_type='Federal'
-            )
-            db.session.add(log_entry)
-            db.session.commit()
-            if success:
-                logger.info("Scheduled federal data fetch completed successfully")
-            else:
-                logger.error("Scheduled federal data fetch failed")
+            # The market series ride along with the federal job (same EIA API)
+            for fetch, scrape_type in [(fetch_federal_data, 'Federal')] + MARKET_FETCHES:
+                success, message = fetch()
+                log_fetch(success, message, scheduled=True, scrape_type=scrape_type)
+                if success:
+                    logger.info(f"Scheduled {scrape_type} data fetch completed successfully")
+                else:
+                    logger.error(f"Scheduled {scrape_type} data fetch failed")
         else:
             logger.info("Scheduled federal data fetch skipped (disabled)")
 
@@ -262,17 +318,27 @@ def prices():
 @app.route('/trends')
 @login_required
 def trends():
-    time_window = request.args.get('time_window', '90')  # Default to 90 days
-    days_ago = datetime.now().date() - timedelta(days=int(time_window))
+    trends_settings = load_trends_settings()
+    # Explicit query param (time window change) wins, then the saved setting, then 90 days; 'all' = no cutoff
+    time_window = request.args.get('time_window') or trends_settings.get('timeWindow') or '90'
+    if time_window == 'all':
+        days_ago = None
+    else:
+        try:
+            days = int(time_window)
+        except ValueError:
+            days = 90
+        days_ago = datetime.now().date() - timedelta(days=days)
 
     # Query to get price data for all vendors within the specified time window
     query = (
         select(Vendor.name, PriceData.date, PriceData.price)
         .select_from(Vendor)
         .join(PriceData, Vendor.id == PriceData.vendor_id)
-        .where(PriceData.date >= days_ago)
         .order_by(Vendor.name, PriceData.date)
     )
+    if days_ago:
+        query = query.where(PriceData.date >= days_ago)
 
     results = db.session.execute(query).fetchall()
 
@@ -286,19 +352,183 @@ def trends():
         #vendors[vendor_name]['dates'].append(row.date.strftime('%Y-%m-%d'))
         vendors[vendor_name]['prices'].append(float(row.price))
 
-    # Fetch federal price data for the specified time window
-    federal_data = FederalPriceData.query.filter(FederalPriceData.date >= days_ago).order_by(FederalPriceData.date).all()
-    federal_prices = {
-        'dates': [data.date.strftime('%Y-%m-%d') for data in federal_data],
-        'prices': [float(data.price) for data in federal_data]
+    # Local average: mean of all vendor prices reported on each date
+    daily_prices = {}
+    for row in results:
+        daily_prices.setdefault(row.date, []).append(float(row.price))
+    local_average = {
+        'dates': [d.strftime('%Y-%m-%dT08:00:00Z') for d in sorted(daily_prices)],
+        'prices': [round(sum(daily_prices[d]) / len(daily_prices[d]), 3) for d in sorted(daily_prices)]
     }
-    
-    logger.info(f"Trends page accessed. Vendor data points: {sum(len(v['dates']) for v in vendors.values())}, Federal data points: {len(federal_data)}")
 
+    # Federal (raw + estimated), spread and spot series are built from full
+    # history so estimates near the window edge use anchors outside the window
+    federal_series, spread_series, spot_series = build_federal_index()
+
+    def in_window(series):
+        return [p for p in series if not days_ago or p[0] >= days_ago]
+
+    federal = in_window(federal_series)
+    federal_prices = {
+        'dates': [d.strftime('%Y-%m-%d') for d, _, _ in federal],
+        'prices': [price for _, price, _ in federal],
+        'estimated': [estimated for _, _, estimated in federal]
+    }
+    spread = in_window(spread_series)
+    price_spread = {
+        'dates': [d.strftime('%Y-%m-%d') for d, _ in spread],
+        'prices': [value for _, value in spread]
+    }
+    def to_chart(series):
+        points = in_window(series)
+        return {
+            'dates': [d.strftime('%Y-%m-%d') for d, _ in points],
+            'prices': [price for _, price in points]
+        }
+
+    spot_prices = to_chart(spot_series)
+    diesel_series = market_series(DIESEL_LOCAL_SERIES)
+    diesel_spot_series = market_series(DIESEL_SPOT_SERIES)
+    diesel_prices = to_chart(diesel_series)
+    diesel_spot_prices = to_chart(diesel_spot_series)
+    # NE retail diesel dates (Mondays) pair with the nearest NY spot date (Fridays)
+    diesel_spread = to_chart(compute_spread(diesel_series, nearest_price_lookup(diesel_spot_series)))
+
+    logger.info(f"Trends page accessed. Vendor data points: {sum(len(v['dates']) for v in vendors.values())}, Federal data points: {len(federal)} ({sum(federal_prices['estimated'])} estimated), Spot data points: {len(spot_prices['dates'])}")
+
+    chart_data = {'vendors': vendors, 'federal_prices': federal_prices, 'local_average': local_average,
+                  'spot_prices': spot_prices, 'price_spread': price_spread,
+                  'diesel_prices': diesel_prices, 'diesel_spot_prices': diesel_spot_prices,
+                  'diesel_spread': diesel_spread}
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        return jsonify({'vendors': vendors, 'federal_prices': federal_prices})
+        return jsonify(chart_data)
     else:
-        return render_template('trends.html', vendors=vendors, federal_prices=federal_prices)
+        return render_template('trends.html', trends_settings=trends_settings, **chart_data)
+
+TIME_WINDOWS = {'30', '90', '365', '1095', 'all'}
+VENDOR_SELECTIONS = {'top5', 'top10', 'all', 'none', 'favorites'}
+INDEXES = ('federal', 'local', 'spot', 'spread', 'diesel', 'dieselSpot', 'dieselSpread')
+
+def load_trends_settings():
+    row = db.session.get(UserSettings, current_user.id)
+    if not row:
+        return {}
+    try:
+        return json.loads(row.settings).get('trends', {})
+    except ValueError:
+        return {}
+
+def clean_trends_settings(data):
+    """Keep only known keys with valid values from a client-supplied settings dict."""
+    def vendor_names(value):
+        if not isinstance(value, list):
+            return []
+        return [v for v in value if isinstance(v, str) and len(v) <= 100][:200]
+
+    indexes = data.get('indexes') if isinstance(data.get('indexes'), dict) else {}
+    cleaned = {
+        'indexes': {name: bool(indexes.get(name)) for name in INDEXES},
+        'favorites': vendor_names(data.get('favorites')),
+        'hiddenVendors': vendor_names(data.get('hiddenVendors')),
+    }
+    if data.get('timeWindow') in TIME_WINDOWS:
+        cleaned['timeWindow'] = data['timeWindow']
+    if data.get('vendorSelection') in VENDOR_SELECTIONS:
+        cleaned['vendorSelection'] = data['vendorSelection']
+    return cleaned
+
+@app.route('/trends/settings', methods=['POST'])
+@login_required
+def save_trends_settings():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message="Invalid settings"), 400
+
+    row = db.session.get(UserSettings, current_user.id)
+    if not row:
+        row = UserSettings(user_id=current_user.id, settings='{}')
+        db.session.add(row)
+    try:
+        all_settings = json.loads(row.settings or '{}')
+    except ValueError:
+        all_settings = {}
+    all_settings['trends'] = clean_trends_settings(data)
+    row.settings = json.dumps(all_settings)
+    db.session.commit()
+    return jsonify(success=True)
+
+def market_series(series_id):
+    """[(date, price)] for one MarketPriceData series, oldest first."""
+    rows = MarketPriceData.query.filter_by(series=series_id).order_by(MarketPriceData.date)
+    return [(r.date, float(r.price)) for r in rows]
+
+FEDERAL_GAP_DAYS = 10   # federal points further apart than this are a gap to estimate
+SPOT_MATCH_DAYS = 6      # federal dates (Mondays) pair with the nearest spot date (Fridays)
+
+def nearest_price_lookup(series):
+    """Return f(day) -> price of the series point nearest to day (within SPOT_MATCH_DAYS), or None."""
+    dates = [d for d, _ in series]
+
+    def nearest(day):
+        i = bisect_left(dates, day)
+        candidates = [series[j] for j in (i - 1, i) if 0 <= j < len(series)]
+        candidates = [c for c in candidates if abs((c[0] - day).days) <= SPOT_MATCH_DAYS]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda c: abs((c[0] - day).days))[1]
+    return nearest
+
+def compute_spread(retail, spot_near):
+    """[(date, retail - spot)] on each retail date that has a nearby spot price."""
+    spread = []
+    for day, price in retail:
+        spot_price = spot_near(day)
+        if spot_price is not None:
+            spread.append((day, round(price - spot_price, 3)))
+    return spread
+
+def build_federal_index():
+    """Return (federal, spread, spot) series over the full history.
+
+    federal: [(date, price, estimated)] - raw EIA points plus weekly estimates
+             filling the gaps. Estimate = spot price + spread, where the spread
+             (federal - spot) is interpolated linearly between the raw points on
+             either side of the gap, or held at the last known spread after the
+             most recent raw point.
+    spread:  [(date, federal - spot)] on raw federal dates only.
+    spot:    [(date, price)]
+    """
+    federal = [(r.date, float(r.price)) for r in FederalPriceData.query.order_by(FederalPriceData.date)]
+    spot = market_series(NY_SPOT_SERIES)
+    spot_dates = [d for d, _ in spot]
+    spot_near = nearest_price_lookup(spot)
+    spread = dict(compute_spread(federal, spot_near))
+
+    estimates = []
+
+    def estimate_weeks(start, end, spread_at):
+        """Add weekly estimates after `start` up to `end`, using spread_at(day)."""
+        day = start + timedelta(days=7)
+        while (end - day).days >= 4:
+            spot_price = spot_near(day)
+            if spot_price is not None:
+                estimates.append((day, round(spot_price + spread_at(day), 3), True))
+            day += timedelta(days=7)
+
+    for (d0, _), (d1, _) in zip(federal, federal[1:]):
+        if (d1 - d0).days > FEDERAL_GAP_DAYS and d0 in spread and d1 in spread:
+            s0, s1 = spread[d0], spread[d1]
+            span = (d1 - d0).days
+            estimate_weeks(d0, d1, lambda day: s0 + (s1 - s0) * (day - d0).days / span)
+
+    # Trailing gap: carry the last known spread forward to the latest spot week
+    if federal and spot and federal[-1][0] in spread:
+        last_day = federal[-1][0]
+        last_spread = spread[last_day]
+        estimate_weeks(last_day, spot_dates[-1] + timedelta(days=SPOT_MATCH_DAYS), lambda day: last_spread)
+
+    federal_series = sorted([(d, p, False) for d, p in federal] + estimates)
+    return federal_series, sorted(spread.items()), spot
 
 if __name__ == '__main__':
     app.run(debug=True)
