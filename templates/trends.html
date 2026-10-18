@@ -226,7 +226,8 @@
         federal: FEDERAL_LABEL, local: LOCAL_LABEL, spot: SPOT_LABEL, spread: SPREAD_LABEL,
         diesel: DIESEL_LABEL, dieselSpot: DIESEL_SPOT_LABEL, dieselSpread: DIESEL_SPREAD_LABEL,
     };
-    const ESTIMATE_COLOR = 'rgba(143, 143, 143, 1)';
+    const ESTIMATE_COLOR = 'rgba(143, 143, 143, 1)';        // estimated Federal Average
+    const LOCAL_ESTIMATE_COLOR = 'rgba(196, 164, 132, 1)';  // estimated Local Average (muted tan)
     const GAP_MS = 10 * 24 * 60 * 60 * 1000;
 
     function toPoints(series) {
@@ -248,6 +249,12 @@
             result.push(point);
         });
         return result;
+    }
+
+    // Chart.js segment style that recolors segments touching an estimated point
+    function estimatedSegments(points, color) {
+        const isEstimated = segment => points[segment.p0DataIndex].estimated || points[segment.p1DataIndex].estimated;
+        return { borderColor: segment => isEstimated(segment) ? color : undefined };
     }
 
     function getLatestPrice(vendorName) {
@@ -284,8 +291,6 @@
 
         // Segments touching an estimated point are drawn grey
         const federalPoints = toPoints(federalData);
-        const isEstimatedSegment = segment =>
-            federalPoints[segment.p0DataIndex].estimated || federalPoints[segment.p1DataIndex].estimated;
         datasets.push({
             label: FEDERAL_LABEL,
             data: federalPoints,
@@ -294,20 +299,21 @@
             fill: false,
             borderWidth: 2,
             pointRadius: 0,
-            segment: {
-                borderColor: segment => isEstimatedSegment(segment) ? ESTIMATE_COLOR : undefined,
-            },
+            segment: estimatedSegments(federalPoints, ESTIMATE_COLOR),
             hidden: !document.getElementById('federal-checkbox').checked,
         });
 
+        // Segments across filled gaps are drawn in a muted tan
+        const localPoints = toPoints(localAverageData);
         datasets.push({
             label: LOCAL_LABEL,
-            data: toPoints(localAverageData),
+            data: localPoints,
             borderColor: 'rgba(139, 69, 19, 1)',
             backgroundColor: 'rgba(139, 69, 19, 1)',
             fill: false,
             borderWidth: 2,
             pointRadius: 0,
+            segment: estimatedSegments(localPoints, LOCAL_ESTIMATE_COLOR),
             hidden: !document.getElementById('local-checkbox').checked,
         });
 
