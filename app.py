@@ -352,18 +352,18 @@ def trends():
         #vendors[vendor_name]['dates'].append(row.date.strftime('%Y-%m-%d'))
         vendors[vendor_name]['prices'].append(float(row.price))
 
-    # Local average: mean of all vendor prices reported on each date
-    daily_prices = {}
-    for row in results:
-        daily_prices.setdefault(row.date, []).append(float(row.price))
-    local_average = {
-        'dates': [d.strftime('%Y-%m-%dT08:00:00Z') for d in sorted(daily_prices)],
-        'prices': [round(sum(daily_prices[d]) / len(daily_prices[d]), 3) for d in sorted(daily_prices)]
-    }
-
     # Federal (raw + estimated), spread and spot series are built from full
     # history so estimates near the window edge use anchors outside the window
     federal_series, spread_series, spot_series = build_federal_index()
+
+    # Local average (raw daily means + weekly estimates across gaps), built from
+    # full history like the federal series so gap anchors outside the window are used
+    local = [p for p in build_local_index(nearest_price_lookup(spot_series)) if not days_ago or p[0] >= days_ago]
+    local_average = {
+        'dates': [d.strftime('%Y-%m-%dT08:00:00Z') for d, _, _ in local],
+        'prices': [price for _, price, _ in local],
+        'estimated': [estimated for _, _, estimated in local]
+    }
 
     def in_window(series):
         return [p for p in series if not days_ago or p[0] >= days_ago]
@@ -486,6 +486,46 @@ def compute_spread(retail, spot_near):
         if spot_price is not None:
             spread.append((day, round(price - spot_price, 3)))
     return spread
+
+LOCAL_GAP_DAYS = 10      # local average points further apart than this are a gap to estimate
+LOCAL_ANCHOR_DAYS = 14   # average the local-vs-spot spread over this many days at each gap edge
+
+def build_local_index(spot_near):
+    """Return [(date, price, estimated)]: the daily mean of all vendor prices,
+    plus weekly estimates filling gaps longer than LOCAL_GAP_DAYS.
+
+    Estimate = NY spot price + spread, where the spread (local - spot) is
+    averaged over LOCAL_ANCHOR_DAYS on each side of the gap (daily local
+    averages are noisy) and interpolated linearly across it.
+    """
+    rows = (db.session.query(PriceData.date, func.avg(PriceData.price))
+            .group_by(PriceData.date).order_by(PriceData.date).all())
+    local = [(day, round(float(avg), 3)) for day, avg in rows]
+    spreads = compute_spread(local, spot_near)
+    spread_dates = [d for d, _ in spreads]
+
+    def mean_spread(start, end):
+        window = spreads[bisect_left(spread_dates, start):bisect_left(spread_dates, end + timedelta(days=1))]
+        return sum(s for _, s in window) / len(window) if window else None
+
+    estimates = []
+    for (d0, _), (d1, _) in zip(local, local[1:]):
+        span = (d1 - d0).days
+        if span <= LOCAL_GAP_DAYS:
+            continue
+        s0 = mean_spread(d0 - timedelta(days=LOCAL_ANCHOR_DAYS), d0)
+        s1 = mean_spread(d1, d1 + timedelta(days=LOCAL_ANCHOR_DAYS))
+        if s0 is None or s1 is None:
+            continue
+        day = d0 + timedelta(days=7)
+        while (d1 - day).days >= 4:
+            spot_price = spot_near(day)
+            if spot_price is not None:
+                spread = s0 + (s1 - s0) * (day - d0).days / span
+                estimates.append((day, round(spot_price + spread, 3), True))
+            day += timedelta(days=7)
+
+    return sorted([(d, p, False) for d, p in local] + estimates)
 
 def build_federal_index():
     """Return (federal, spread, spot) series over the full history.
